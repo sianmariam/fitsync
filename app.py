@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from foodvol.core import FoodVolumePipeline, Det
+from foodvol.core import FoodVolumePipeline, Det, ItemFeatures
 import datetime as dt
 
 from foodvol import gemini, planner, store, dashboard, auth
@@ -253,36 +253,65 @@ with tab_food:
                 st.caption(f"Calibration: {cal.px_per_cm:.1f} px/cm · {'assumed' if res.get('approx') else 'estimated'} "
                            f"camera distance {cal.cam_dist_cm:.0f} cm")
                 gmap = {g["name"]: g.get("gemini_grams") for g in gem_items}
-                rows = []
-                for it in res["items"]:
-                    r = dict(Food=it.name.replace("_", " "), Confidence=round(it.conf, 2),
-                             **{"Volume (cm³)": round(it.volume_cm3), "Mass (g)": round(it.mass_g),
-                                "Calories (kcal)": round(it.kcal), "Protein (g)": round(it.protein_g, 1),
-                                "Carbs (g)": round(it.carbs_g, 1), "Fat (g)": round(it.fat_g, 1)})
-                    if gmap:
-                        r["Gemini guess (g)"] = gmap.get(it.name)
-                    rows.append(r)
-                df = pd.DataFrame(rows)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                tot = df[["Calories (kcal)", "Protein (g)", "Carbs (g)", "Fat (g)"]].sum()
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total calories", f"{tot['Calories (kcal)']:.0f} kcal")
-                m2.metric("Protein", f"{tot['Protein (g)']:.1f} g")
-                m3.metric("Carbs", f"{tot['Carbs (g)']:.1f} g")
-                m4.metric("Fat", f"{tot['Fat (g)']:.1f} g")
-                with st.expander("How was this measured? (features fed to the ML correction model)"):
-                    st.dataframe(pd.DataFrame([it.features for it in res["items"]]).round(2),
-                                 use_container_width=True)
-                mc1, mc2 = st.columns([1, 2])
-                hour = dt.datetime.now().hour
-                default_meal = 0 if hour < 11 else 1 if hour < 16 else 2 if hour < 19 else 3
-                meal_type = mc1.selectbox("Meal", ["Breakfast", "Lunch", "Snack", "Dinner"], index=default_meal)
-                if mc2.button("➕ Add to today's log", type="primary"):
-                    items = [dict(food=it.name, grams=round(it.mass_g), kcal=round(it.kcal),
-                                  protein=round(it.protein_g, 1), carbs=round(it.carbs_g, 1), fat=round(it.fat_g, 1))
-                             for it in res["items"]]
-                    store.add_meal(data, meal_type, items, bgr)
-                    st.success(f"Added to {meal_type}. See the Dashboard.")
+                # ---- let the user correct a wrong label (e.g. a dish the detectors weren't trained on)
+                REMOVE = "✕ not food – remove"
+                foods_all = sorted(k.replace("_", " ") for k in pipe.db.rows)
+                fid = getattr(src, "file_id", None) or getattr(src, "name", "photo")
+                with st.expander("✏️ Wrong food name? Correct it here", expanded=False):
+                    st.caption("The volume is still measured from the photo; only the food type (density and "
+                               "nutrition values) changes. Dishes outside the training classes use the "
+                               "food-agnostic volume model.")
+                    kept = []
+                    for i, it in enumerate(res["items"]):
+                        cur = it.name.replace("_", " ")
+                        opts = [cur] + [f for f in foods_all if f != cur] + [REMOVE]
+                        choice = st.selectbox(f"Item {i + 1} (detected: {cur}, {it.conf:.0%})", opts,
+                                              key=f"fix_{fid}_{i}")
+                        if choice == REMOVE:
+                            continue
+                        if choice != cur:
+                            new = choice.replace(" ", "_")
+                            f = ItemFeatures(**{**it.features, "name": new})
+                            vol = pipe.predict_volume(f)
+                            n = pipe.db.nutrients(new, vol)
+                            it.name, it.conf, it.volume_cm3 = new, 1.0, vol
+                            it.mass_g, it.kcal = n["mass_g"], n["kcal"]
+                            it.protein_g, it.carbs_g, it.fat_g = n["protein_g"], n["carbs_g"], n["fat_g"]
+                        kept.append(it)
+                    res["items"] = kept
+                if not res["items"]:
+                    st.info("All items removed.")
+                else:
+                    rows = []
+                    for it in res["items"]:
+                        r = dict(Food=it.name.replace("_", " "), Confidence=round(it.conf, 2),
+                                 **{"Volume (cm³)": round(it.volume_cm3), "Mass (g)": round(it.mass_g),
+                                    "Calories (kcal)": round(it.kcal), "Protein (g)": round(it.protein_g, 1),
+                                    "Carbs (g)": round(it.carbs_g, 1), "Fat (g)": round(it.fat_g, 1)})
+                        if gmap:
+                            r["Gemini guess (g)"] = gmap.get(it.name)
+                        rows.append(r)
+                    df = pd.DataFrame(rows)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    tot = df[["Calories (kcal)", "Protein (g)", "Carbs (g)", "Fat (g)"]].sum()
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Total calories", f"{tot['Calories (kcal)']:.0f} kcal")
+                    m2.metric("Protein", f"{tot['Protein (g)']:.1f} g")
+                    m3.metric("Carbs", f"{tot['Carbs (g)']:.1f} g")
+                    m4.metric("Fat", f"{tot['Fat (g)']:.1f} g")
+                    with st.expander("How was this measured? (features fed to the ML correction model)"):
+                        st.dataframe(pd.DataFrame([it.features for it in res["items"]]).round(2),
+                                     use_container_width=True)
+                    mc1, mc2 = st.columns([1, 2])
+                    hour = dt.datetime.now().hour
+                    default_meal = 0 if hour < 11 else 1 if hour < 16 else 2 if hour < 19 else 3
+                    meal_type = mc1.selectbox("Meal", ["Breakfast", "Lunch", "Snack", "Dinner"], index=default_meal)
+                    if mc2.button("➕ Add to today's log", type="primary"):
+                        items = [dict(food=it.name, grams=round(it.mass_g), kcal=round(it.kcal),
+                                      protein=round(it.protein_g, 1), carbs=round(it.carbs_g, 1), fat=round(it.fat_g, 1))
+                                 for it in res["items"]]
+                        store.add_meal(data, meal_type, items, bgr)
+                        st.success(f"Added to {meal_type}. See the Dashboard.")
 
 # ---------------------------------------------------------------- workout tab
 with tab_workout:
