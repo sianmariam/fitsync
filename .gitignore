@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# User accounts and personal data (never upload)
+data/users/
+data/users.json
+data/user_data.json
+
+# Large datasets and caches
+data/ECUSTFD/
+data/yolo/
+data/indianfoodnet/
+data/idli_yolo/
+data/depth_cache/
+runs/
+
+# Large model kept out of git (download separately, see README)
+models/da2_vits.onnx
+models/yolov8n.pt
+models/yolo11n.pt

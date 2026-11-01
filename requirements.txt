@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+ultralytics>=8.3
+onnxruntime>=1.18
+opencv-python-headless>=4.9
+numpy
+pandas
+scikit-learn==1.9.1
+joblib
+streamlit>=1.36
+altair
+google-genai>=1.0
+xlrd
