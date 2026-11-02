@@ -21,8 +21,12 @@ Return ONLY a JSON list, one object per distinct food item (ignore the coin, pla
   "gemini_grams": your best guess of this item's weight in grams}]"""
 
 
+# Google retires model names over time; try these in order until one works.
+FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]
+
+
 def default_model():
-    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    return os.environ.get("GEMINI_MODEL", FALLBACK_MODELS[0])
 
 
 def analyze(bgr, api_key: str | None = None, model: str | None = None):
@@ -33,11 +37,24 @@ def analyze(bgr, api_key: str | None = None, model: str | None = None):
         raise RuntimeError("No Gemini API key")
     client = genai.Client(api_key=key)
     ok, jpg = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    resp = client.models.generate_content(
-        model=model or default_model(),
-        contents=[types.Part.from_bytes(data=jpg.tobytes(), mime_type="image/jpeg"), PROMPT],
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
-    )
+    first = model or os.environ.get("GEMINI_MODEL")
+    names = ([first] if first else []) + [m for m in FALLBACK_MODELS if m != first]
+    resp, last_err = None, None
+    for name in names:
+        try:
+            resp = client.models.generate_content(
+                model=name,
+                contents=[types.Part.from_bytes(data=jpg.tobytes(), mime_type="image/jpeg"), PROMPT],
+                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+            )
+            break
+        except Exception as e:  # model retired / not found -> try the next one
+            last_err = e
+            msg = str(e)
+            if not ("404" in msg or "NOT_FOUND" in msg or "not found" in msg.lower()):
+                raise
+    if resp is None:
+        raise last_err
     items = json.loads(resp.text)
     if isinstance(items, dict):
         items = items.get("items", [items])
